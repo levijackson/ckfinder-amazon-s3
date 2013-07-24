@@ -95,7 +95,8 @@ $baseDir = '/';
 $config['AmazonS3'] = Array(
     'AccessKey' => '',
     'SecretKey' => '',
-    'Bucket' => ''
+    'Bucket' => '',
+    'baseURL' => $baseUrl
 );
 
 
@@ -111,7 +112,7 @@ $config['Thumbnails'] = Array(
 		'url' => $baseUrl . '_thumbs',
 		'directory' => $baseDir . '_thumbs',
 		'enabled' => true,
-		'directAccess' => false,
+		'directAccess' => true,
 		'maxWidth' => 100,
 		'maxHeight' => 100,
 		'bmpSupported' => false,
@@ -220,21 +221,21 @@ $config['ResourceType'][] = Array(
 		'allowedExtensions' => '',
 		'deniedExtensions' => '');
 
-// $config['ResourceType'][] = Array(
-// 		'name' => 'Images',
-// 		'url' => $baseUrl . 'images',
-// 		'directory' => $baseDir . 'images',
-// 		'maxSize' => 0,
-// 		'allowedExtensions' => 'bmp,gif,jpeg,jpg,png',
-// 		'deniedExtensions' => '');
+$config['ResourceType'][] = Array(
+		'name' => 'Images',
+		'url' => $baseUrl . 'images',
+		'directory' => $baseDir . 'images',
+		'maxSize' => 0,
+		'allowedExtensions' => 'bmp,gif,jpeg,jpg,png',
+		'deniedExtensions' => '');
 
-// $config['ResourceType'][] = Array(
-// 		'name' => 'Flash',
-// 		'url' => $baseUrl . 'flash',
-// 		'directory' => $baseDir . 'flash',
-// 		'maxSize' => 0,
-// 		'allowedExtensions' => 'swf,flv',
-// 		'deniedExtensions' => '');
+$config['ResourceType'][] = Array(
+		'name' => 'Flash',
+		'url' => $baseUrl . 'flash',
+		'directory' => $baseDir . 'flash',
+		'maxSize' => 0,
+		'allowedExtensions' => 'swf,flv',
+		'deniedExtensions' => '');
 
 /*
  Due to security issues with Apache modules, it is recommended to leave the

@@ -51,6 +51,9 @@ class CKFinder_Connector_CommandHandler_Thumbnail extends CKFinder_Connector_Com
         $this->checkConnector();
         $this->checkRequest();
 
+        global $config;
+        $s3 = s3_con();
+
         $_config =& CKFinder_Connector_Core_Factory::getInstance("Core_Config");
 
         $_thumbnails = $_config->getThumbnailsConfig();
@@ -73,42 +76,40 @@ class CKFinder_Connector_CommandHandler_Thumbnail extends CKFinder_Connector_Com
             $this->_errorHandler->throwError(CKFINDER_CONNECTOR_ERROR_INVALID_REQUEST);
         }
 
-        $sourceFilePath = CKFinder_Connector_Utils_FileSystem::combinePaths($this->_currentFolder->getServerPath(), $fileName);
+        $sourceFilePath = ltrim(CKFinder_Connector_Utils_FileSystem::combinePaths($this->_currentFolder->getServerPath(), $fileName), '\/');
 
-        if ($_resourceTypeInfo->checkIsHiddenFile($fileName) || !file_exists($sourceFilePath)) {
+        if ($_resourceTypeInfo->checkIsHiddenFile($fileName) || !$s3->getObjectInfo($config['AmazonS3']['Bucket'], $sourceFilePath)) {
             $this->_errorHandler->throwError(CKFINDER_CONNECTOR_ERROR_FILE_NOT_FOUND);
         }
 
-        $thumbFilePath = CKFinder_Connector_Utils_FileSystem::combinePaths($this->_currentFolder->getThumbsServerPath(), $fileName);
+        $thumbFilePath = ltrim(CKFinder_Connector_Utils_FileSystem::combinePaths($this->_currentFolder->getThumbsServerPath(), $fileName), '\/');
 
         // If the thumbnail file doesn't exists, create it now.
-        if (!file_exists($thumbFilePath)) {
+        if (!$thumbInfo = $s3->getObjectInfo($config['AmazonS3']['Bucket'], $thumbFilePath)) {
             if(!$this->createThumb($sourceFilePath, $thumbFilePath, $_thumbnails->getMaxWidth(), $_thumbnails->getMaxHeight(), $_thumbnails->getQuality(), true, $_thumbnails->getBmpSupported())) {
                 $this->_errorHandler->throwError(CKFINDER_CONNECTOR_ERROR_ACCESS_DENIED);
             }
         }
 
-        $size = filesize($thumbFilePath);
-        $sourceImageAttr = getimagesize($thumbFilePath);
-        $mime = $sourceImageAttr["mime"];
+        $thumbFilePath = str_replace(' ', "%20", $config['AmazonS3']['baseURL'].$thumbFilePath);
+
+        $ch = curl_init(); 
+        curl_setopt_array($ch, array(
+            CURLOPT_HEADER => false,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_URL => $thumbFilePath,
+            CURLOPT_RETURNTRANSFER => true
+
+        ));
+        $image = curl_exec($ch);
+
+        $size = curl_getinfo($ch, CURLINFO_CONTENT_LENGTH_DOWNLOAD);
+        $mime = curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
+        $httpcode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 
         $rtime = isset($_SERVER["HTTP_IF_MODIFIED_SINCE"])?@strtotime($_SERVER["HTTP_IF_MODIFIED_SINCE"]):0;
-        $mtime =  filemtime($thumbFilePath);
+        $mtime =  curl_getinfo($ch, CURLOPT_FILETIME);
         $etag = dechex($mtime) . "-" . dechex($size);
-
-        $is304 = false;
-
-        if (isset($_SERVER["HTTP_IF_NONE_MATCH"]) && $_SERVER["HTTP_IF_NONE_MATCH"] === $etag) {
-            $is304 = true;
-        }
-        else if($rtime == $mtime) {
-            $is304 = true;
-        }
-
-        if ($is304) {
-            header("HTTP/1.0 304 Not Modified");
-            exit();
-        }
 
         //header("Cache-Control: cache, must-revalidate");
         //header("Pragma: public");
@@ -120,7 +121,8 @@ class CKFinder_Connector_CommandHandler_Thumbnail extends CKFinder_Connector_Com
         //header("Content-type: application/octet-stream; name=\"{$file}\"");
         //header("Content-Disposition: attachment; filename=\"{$file}\"");
         header("Content-Length: ".$size);
-        readfile($thumbFilePath);
+        echo $image; 
+
         exit;
     }
 
@@ -139,10 +141,19 @@ class CKFinder_Connector_CommandHandler_Thumbnail extends CKFinder_Connector_Com
      */
     public static function createThumb($sourceFile, $targetFile, $maxWidth, $maxHeight, $quality, $preserverAspectRatio, $bmpSupported = false)
     {
-        $sourceImageAttr = @getimagesize($sourceFile);
+        global $config;
+        $s3 = s3_con();
+
+        $fileURL = str_replace(' ', "%20", $config['AmazonS3']['baseURL'].$sourceFile);
+        $image = $s3->getObject($config['AmazonS3']['Bucket'], $sourceFile);
+
+        $sourceFile = imagecreatefromstring($image->body);
+        $sourceImageAttr = getimagesize($fileURL);
+
         if ($sourceImageAttr === false) {
             return false;
         }
+
         $sourceImageWidth = isset($sourceImageAttr[0]) ? $sourceImageAttr[0] : 0;
         $sourceImageHeight = isset($sourceImageAttr[1]) ? $sourceImageAttr[1] : 0;
         $sourceImageMime = isset($sourceImageAttr["mime"]) ? $sourceImageAttr["mime"] : "";
@@ -158,7 +169,7 @@ class CKFinder_Connector_CommandHandler_Thumbnail extends CKFinder_Connector_Com
 
         if ($sourceImageWidth <= $iFinalWidth && $sourceImageHeight <= $iFinalHeight) {
             if ($sourceFile != $targetFile) {
-                copy($sourceFile, $targetFile);
+                $s3->putObject($sourceFile, $config['AmazonS3']['Bucket'], $targetFile);
             }
             return true;
         }
@@ -174,12 +185,13 @@ class CKFinder_Connector_CommandHandler_Thumbnail extends CKFinder_Connector_Com
 
         CKFinder_Connector_Utils_Misc::setMemoryForImage($sourceImageWidth, $sourceImageHeight, $sourceImageBits, $sourceImageChannels);
 
+        $thumbImage['type'] = $sourceImageAttr['mime'];
         switch ($sourceImageAttr['mime'])
         {
             case 'image/gif':
                 {
                     if (@imagetypes() & IMG_GIF) {
-                        $oImage = @imagecreatefromgif($sourceFile);
+                        $oImage = $sourceFile;
                     } else {
                         $ermsg = 'GIF images are not supported';
                     }
@@ -188,7 +200,7 @@ class CKFinder_Connector_CommandHandler_Thumbnail extends CKFinder_Connector_Com
             case 'image/jpeg':
                 {
                     if (@imagetypes() & IMG_JPG) {
-                        $oImage = @imagecreatefromjpeg($sourceFile) ;
+                        $oImage = $sourceFile;
                     } else {
                         $ermsg = 'JPEG images are not supported';
                     }
@@ -197,7 +209,7 @@ class CKFinder_Connector_CommandHandler_Thumbnail extends CKFinder_Connector_Com
             case 'image/png':
                 {
                     if (@imagetypes() & IMG_PNG) {
-                        $oImage = @imagecreatefrompng($sourceFile) ;
+                        $oImage = $sourceFile;
                     } else {
                         $ermsg = 'PNG images are not supported';
                     }
@@ -206,24 +218,9 @@ class CKFinder_Connector_CommandHandler_Thumbnail extends CKFinder_Connector_Com
             case 'image/wbmp':
                 {
                     if (@imagetypes() & IMG_WBMP) {
-                        $oImage = @imagecreatefromwbmp($sourceFile);
+                        $oImage = $sourceFile;
                     } else {
                         $ermsg = 'WBMP images are not supported';
-                    }
-                }
-                break;
-            case 'image/bmp':
-                {
-                    /*
-                    * This is sad that PHP doesn't support bitmaps.
-                    * Anyway, we will use our custom function at least to display thumbnails.
-                    * We'll not resize images this way (if $sourceFile === $targetFile),
-                    * because user defined imagecreatefrombmp and imagecreatebmp are horribly slow
-                    */
-                    if ($bmpSupported && (@imagetypes() & IMG_JPG) && $sourceFile != $targetFile) {
-                        $oImage = CKFinder_Connector_Utils_Misc::imageCreateFromBmp($sourceFile);
-                    } else {
-                        $ermsg = 'BMP/JPG images are not supported';
                     }
                 }
                 break;
@@ -231,6 +228,8 @@ class CKFinder_Connector_CommandHandler_Thumbnail extends CKFinder_Connector_Com
                 $ermsg = $sourceImageAttr['mime'].' images are not supported';
                 break;
         }
+
+        
 
         if (isset($ermsg) || false === $oImage) {
             return false;
@@ -247,33 +246,29 @@ class CKFinder_Connector_CommandHandler_Thumbnail extends CKFinder_Connector_Com
             imagesavealpha($oThumbImage, true);
         }
 
-        //imagecopyresampled($oThumbImage, $oImage, 0, 0, 0, 0, $oSize["Width"], $oSize["Height"], $sourceImageWidth, $sourceImageHeight);
-        CKFinder_Connector_Utils_Misc::fastImageCopyResampled($oThumbImage, $oImage, 0, 0, 0, 0, $oSize["Width"], $oSize["Height"], $sourceImageWidth, $sourceImageHeight, (int)max(floor($quality/20), 6));
+        imagecopyresampled($oThumbImage, $oImage, 0, 0, 0, 0, $oSize["Width"], $oSize["Height"], $sourceImageWidth, $sourceImageHeight);
 
+        ob_start();
         switch ($sourceImageAttr['mime'])
         {
             case 'image/gif':
-                imagegif($oThumbImage, $targetFile);
+                imagegif($oThumbImage);
                 break;
             case 'image/jpeg':
             case 'image/bmp':
-                imagejpeg($oThumbImage, $targetFile, $quality);
+                imagejpeg($oThumbImage);
                 break;
             case 'image/png':
-                imagepng($oThumbImage, $targetFile);
+                imagepng($oThumbImage);
                 break;
             case 'image/wbmp':
-                imagewbmp($oThumbImage, $targetFile);
+                imagewbmp($oThumbImage);
                 break;
         }
+        $tmpImage = ob_get_clean();
+        $thumbImage['data'] = $tmpImage;
 
-        $_config =& CKFinder_Connector_Core_Factory::getInstance("Core_Config");
-        if (file_exists($targetFile) && ($perms = $_config->getChmodFiles())) {
-            $oldUmask = umask(0);
-            chmod($targetFile, $perms);
-            umask($oldUmask);
-        }
-
+        $s3->putObject($thumbImage, $config['AmazonS3']['Bucket'], $targetFile, s3::ACL_PUBLIC_READ);
         imageDestroy($oImage);
         imageDestroy($oThumbImage);
 
