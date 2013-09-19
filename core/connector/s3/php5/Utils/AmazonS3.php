@@ -441,14 +441,14 @@ class S3
 	* @param string $md5sum MD5 hash to send (optional)
 	* @return array | false
 	*/
-	public static function inputResource(&$resource, $bufferSize, $md5sum = '')
+	public static function inputResource(&$resource, $bufferSize, $md5sum = '', $fileName = '', $contentType = '')
 	{
 		if (!is_resource($resource) || $bufferSize < 0)
 		{
 			self::__triggerError('S3::inputResource(): Invalid resource or buffer size', __FILE__, __LINE__);
 			return false;
 		}
-		$input = array('size' => $bufferSize, 'md5sum' => $md5sum);
+		$input = array('size' => $bufferSize, 'md5sum' => $md5sum, 'file' => $fileName, 'type' => $contentType);
 		$input['fp'] =& $resource;
 		return $input;
 	}
